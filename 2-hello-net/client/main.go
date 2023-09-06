@@ -16,5 +16,9 @@ func main() {
 		return
 	}
 	resp, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
 	fmt.Println("Response from server: ", resp)
 }
