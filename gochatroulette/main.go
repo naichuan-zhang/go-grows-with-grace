@@ -6,30 +6,48 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"markov"
+	"net"
 	"net/http"
+	"time"
 )
 
 const listenAddr = "localhost:4000"
 
-// We can't just use a websocket.Conn instead of the net.Conn,
-// because a websocket.Conn is held open by its handler function.
-// Here we use a channel to keep the handler running until the socket's Close method is called.
+var chain = markov.NewChain(2) // 2-word prefixes
+
 type socket struct {
-	conn *websocket.Conn
+	io.Reader
+	io.Writer
 	done chan bool
-}
-
-func (s socket) Read(b []byte) (int, error) {
-	return s.conn.Read(b)
-}
-
-func (s socket) Write(b []byte) (int, error) {
-	return s.conn.Write(b)
 }
 
 func (s socket) Close() error {
 	s.done <- true
 	return nil
+}
+
+// Bot runs an io.ReadWriteCloser that responds to
+// each incoming write with a generated sentence.
+func Bot() io.ReadWriteCloser {
+	r, out := io.Pipe()
+	return bot{r, out}
+}
+
+type bot struct {
+	io.ReadCloser
+	out io.Writer
+}
+
+func (b bot) Write(p []byte) (int, error) {
+	go b.speak()
+	return len(p), nil
+}
+
+func (b bot) speak() {
+	time.Sleep(time.Second)
+	msg := chain.Generate(10) // at most 10 words
+	b.out.Write([]byte(msg))
 }
 
 var rootTemplate = template.Must(template.New("root").Parse(`
@@ -92,7 +110,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func socketHandler(conn *websocket.Conn) {
-	s := socket{conn: conn, done: make(chan bool)}
+	s := socket{conn, conn, make(chan bool)}
 	go match(s)
 	<-s.done
 }
@@ -106,9 +124,15 @@ func match(c io.ReadWriteCloser) {
 		// handled by the other goroutine
 	case p := <-partner:
 		chat(p, c)
+	// The bot should jump in if a real partner doesn't join.
+	// To do this, we add a case to the select that triggers after 5 seconds,
+	// starting a chat between the user's socket and a bot.
+	case <-time.After(5 * time.Second):
+		chat(Bot(), c)
 	}
 }
 
+// The chat function remains untouched.
 func chat(a, b io.ReadWriteCloser) {
 	fmt.Fprintln(a, "Found one! Say hi.")
 	fmt.Fprintln(b, "Found one! Say hi.")
@@ -129,11 +153,27 @@ func cp(w io.Writer, r io.Reader, errc chan<- error) {
 	errc <- err
 }
 
+// TCP and HTTP at the same time.
 func main() {
+	go netListen()
 	http.HandleFunc("/", rootHandler)
 	http.Handle("/socket", websocket.Handler(socketHandler))
 	err := http.ListenAndServe(listenAddr, nil)
 	if err != nil {
 		log.Fatal(err)
+	}
+}
+
+func netListen() {
+	l, err := net.Listen("tcp", "localhost:4001")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			log.Fatal(err)
+		}
+		go match(c)
 	}
 }

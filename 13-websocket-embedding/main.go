@@ -11,20 +11,11 @@ import (
 
 const listenAddr = "localhost:4000"
 
-// We can't just use a websocket.Conn instead of the net.Conn,
-// because a websocket.Conn is held open by its handler function.
-// Here we use a channel to keep the handler running until the socket's Close method is called.
+// By embedding the *websocket.Conn as an io.ReadWriter,
+// we can drop the explicit socket Read and Write methods.
 type socket struct {
-	conn *websocket.Conn
+	io.ReadWriter
 	done chan bool
-}
-
-func (s socket) Read(b []byte) (int, error) {
-	return s.conn.Read(b)
-}
-
-func (s socket) Write(b []byte) (int, error) {
-	return s.conn.Write(b)
 }
 
 func (s socket) Close() error {
@@ -92,7 +83,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func socketHandler(conn *websocket.Conn) {
-	s := socket{conn: conn, done: make(chan bool)}
+	s := socket{conn, make(chan bool)}
 	go match(s)
 	<-s.done
 }
